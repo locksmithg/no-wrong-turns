@@ -1,6 +1,8 @@
 class_name Player
 extends CharacterBody2D
 
+@onready var maze = get_parent().get_node("maze")
+
 enum State {CHOOSING, MOVING, FIGHTING, DEAD}
 var current_state = State.CHOOSING
 
@@ -13,7 +15,7 @@ var map = {}
 
 func _ready():
 	target_position = position
-	map = $"../maze".map
+	map = maze.map
 
 func _process(delta):
 	match current_state:
@@ -39,8 +41,9 @@ func state_choosing():
 
 func move_to_next(direction):
 	if direction in map[current_map_node]:
+		
 		var next_decision = map[current_map_node][direction]
-		var next_position = $"../maze".get_node(next_decision).position
+		var next_position = maze.get_node(next_decision).position
 		
 		target_position = next_position
 		current_map_node = next_decision
@@ -50,7 +53,10 @@ func state_moving(delta):
 	var move_vector = (target_position - position).normalized() * SPEED * delta
 	if move_vector.length() > (target_position - position).length():
 		position = target_position
-		current_state = State.CHOOSING  # Arrived at next decision point
+		if current_map_node.begins_with("trap"):
+			current_state = State.DEAD
+		else:
+			current_state = State.CHOOSING  # Arrived at next decision point
 	else:
 		position += move_vector
 
@@ -62,9 +68,9 @@ func state_fighting():
 
 func state_dead():
 	print("Knight is dead.")
-	# Handle respawning or game over logic here
-
-func can_move(dir):
-	# Check if the next position is within maze bounds or not blocked
-	# Implement collision or maze boundary checks here
-	return true  # Placeholder
+	# Add death animation or sound here
+	# Restart at the start node with a new knight
+	current_map_node = "start"
+	position = maze.get_node("start").position
+	target_position = position
+	current_state = State.CHOOSING
