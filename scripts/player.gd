@@ -77,6 +77,8 @@ func state_moving(delta):
 		# Reached the end of the path
 		if current_map_node.begins_with("trap"):
 			current_state = State.DEAD
+		elif current_map_node.begins_with("finish"):
+			complete_level()
 		else:
 			current_state = State.CHOOSING
 		path_index = 0
@@ -95,3 +97,6 @@ func state_dead():
 	current_map_node = "start"
 	position = maze.get_node("start").position
 	current_state = State.CHOOSING
+
+func complete_level():
+	print("You did it!")
