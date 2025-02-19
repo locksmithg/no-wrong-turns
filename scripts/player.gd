@@ -7,23 +7,32 @@ extends CharacterBody2D
 enum State {CHOOSING, MOVING, FIGHTING, DEAD}
 var current_state = State.CHOOSING
 
-const SPEED = 500
-var direction = Vector2.ZERO
-var path = []
-var path_index = 0
+# Maze data from the parent (maze generator)
+var map = []
+var maze_width: int = 0
+var maze_height: int = 0
+var tile_size: int = 64
 
-var current_map_node = "start"
-var map = {}
+const SPEED = 1000
+var target_position: Vector2
+var current_cell: Vector2 = Vector2(1, 1)
+var target_cell: Vector2 = Vector2(1, 1)
+var final_cell: Vector2 = Vector2(1, 1)
+var direction: Vector2 = Vector2.ZERO
+var last_direction: Vector2 = Vector2.ZERO
+var chain_moving: bool = false  # true if we are in an auto–movement chain
 
 func _ready():
-	map = maze.map
-	# Get the starting tile position
-	var start_tile = map["start"]
-	var start_cell = tilemap.local_to_map(maze.get_node("start").position)
-	var start_position = tilemap.map_to_local(start_cell)
-	
+	var generator = get_parent().get_node("MazeGenerator")
+	current_cell = tilemap.local_to_map(maze.get_node("start").position)
+	maze_width = generator.maze_width
+	maze_height = generator.maze_height
+	tile_size = generator.tile_size
+	final_cell = generator.finish
+	map = generator.maze
 	# Center the player on the start tile
-	position = start_position
+	position = current_cell * (tile_size*1.5)
+	target_position = position
 
 func _process(delta):
 	match current_state:
@@ -37,52 +46,104 @@ func _process(delta):
 			state_dead()
 
 func state_choosing():
+	direction = Vector2.ZERO
 	if Input.is_action_just_pressed("ui_up"):
-		move_to_next("up")
+		direction = Vector2(0, -1)
 	elif Input.is_action_just_pressed("ui_down"):
-		move_to_next("down")
+		direction = Vector2(0, 1)
 	elif Input.is_action_just_pressed("ui_left"):
-		move_to_next("left")
+		direction = Vector2(-1, 0)
 	elif Input.is_action_just_pressed("ui_right"):
-		move_to_next("right")
+		direction = Vector2(1, 0)
 	
-
-func move_to_next(direction):
-	if direction in map[current_map_node]:
-		
-		var next_decision = map[current_map_node][direction]
-		var next_position = maze.get_node(next_decision).position
-		current_map_node = next_decision
-		
-		var current_cell = tilemap.local_to_map(position)
-		var target_cell = tilemap.local_to_map(next_position)
-		
-		var path_cells = tilemap.get_astar_path(current_cell, target_cell)
-		for i in range(path_cells.size()):
-			path.append(tilemap.map_to_local(path_cells[i]))
-		current_state = State.MOVING
+	if direction != Vector2.ZERO:
+		# Check if the adjacent cell in that direction is open.
+		var neighbor = current_cell + direction
+		if is_in_bounds(neighbor) and map[int(neighbor.x)][int(neighbor.y)] == 0:
+			last_direction = direction
+			target_cell = move_until_wall(current_cell, direction)
+			chain_moving = true
+			current_state = State.MOVING
 
 func state_moving(delta):
-	if path_index < path.size():
-		var next_position = path[path_index]
-		var curPos = position
-		var move_vector = (next_position - position).normalized() * SPEED * delta
-		
-		if move_vector.length() >= (next_position - position).length():
-			position = next_position
-			path_index += 1  # Move to the next point in the path
-		else:
-			position += move_vector
-	else:
-		# Reached the end of the path
-		if current_map_node.begins_with("trap"):
-			current_state = State.DEAD
-		elif current_map_node.begins_with("finish"):
-			complete_level()
-		else:
-			current_state = State.CHOOSING
-		path_index = 0
-		path.clear()
+	var target_pos = target_cell * tile_size
+	target_pos.x += tile_size/2
+	target_pos.y += tile_size/2
+	position = position.move_toward(target_pos, SPEED * delta)
+	if position.distance_to(target_pos) < 1.0:
+		# Arrived at the target cell.
+		position = target_pos
+		current_state = State.CHOOSING
+		current_cell = target_cell
+
+		# If we’re in chain–movement mode, decide what to do next.
+		if chain_moving:
+			if count_open_neighbors(current_cell) >= 3:
+				chain_moving = false
+			else:
+				# Try to auto-move in an open adjacent direction (not the cell we came from).
+				var next_direction = find_adjacent_direction(current_cell, -last_direction)
+				if next_direction != Vector2.ZERO:
+					last_direction = next_direction
+					target_cell = move_until_wall(current_cell, last_direction)
+					current_state = State.MOVING
+				else:
+					chain_moving = false
+		if (current_state != State.MOVING):
+			if(count_open_neighbors(current_cell) == 1):
+				if (current_cell == final_cell):
+					complete_level()
+				else:
+					current_state = State.DEAD
+
+# Counts the number of open (path) adjacent cells (up, down, left, right) from a given cell.
+func count_open_neighbors(cell: Vector2) -> int:
+	var count = 0
+	var directions = [Vector2(0, -1), Vector2(1, 0), Vector2(0, 1), Vector2(-1, 0)]
+	for d in directions:
+		var neighbor = cell + d
+		if is_in_bounds(neighbor) and map[int(neighbor.x)][int(neighbor.y)] == 0:
+			count += 1
+	return count
+
+# Returns the furthest cell (in grid coordinates) in the given direction
+# that the player can move to without hitting a wall.
+func move_until_wall(start: Vector2, direction: Vector2) -> Vector2:
+	var cell = start
+	while true:
+		var next_cell = cell + direction
+		if (not is_in_bounds(next_cell)) or (map[int(next_cell.x)][int(next_cell.y)] == 1):
+			break
+		cell = next_cell
+		if(count_open_neighbors(cell) > 2):
+			break
+	return cell
+
+# Looks for an open adjacent direction (as a Vector2) from the given cell,
+# excluding the direction provided in 'exclude' (usually the reverse of last_direction).
+# Checks the four cardinal directions in order: up, right, down, left.
+func find_adjacent_direction(cell: Vector2, exclude: Vector2) -> Vector2:
+	var directions = [Vector2(0, -1), Vector2(1, 0), Vector2(0, 1), Vector2(-1, 0)]
+	for d in directions:
+		if d == exclude:
+			continue
+		var neighbor = cell + d
+		if is_in_bounds(neighbor) and map[int(neighbor.x)][int(neighbor.y)] == 0:
+			return d
+	return Vector2.ZERO
+
+# Checks if the cell is within maze boundaries.
+func is_in_bounds(cell: Vector2) -> bool:
+	return (cell.x >= 0) and (cell.y >= 0) and (cell.x < maze_width) and (cell.y < maze_height)
+
+# Checks whether the given cell contains a special point.
+# This function iterates through all nodes in the "special" group.
+func is_special_cell(cell: Vector2) -> bool:
+	for special in get_tree().get_nodes_in_group("special"):
+		var node_cell = Vector2(int(special.position.x / tile_size), int(special.position.y / tile_size))
+		if node_cell == cell:
+			return true
+	return false
 
 func state_fighting():
 	# Placeholder for combat logic
@@ -94,8 +155,8 @@ func state_dead():
 	print("Knight is dead.")
 	# Add death animation or sound here
 	# Restart at the start node with a new knight
-	current_map_node = "start"
-	position = maze.get_node("start").position
+	current_cell = Vector2(1,1)
+	position = current_cell * (tile_size*1.5)
 	current_state = State.CHOOSING
 
 func complete_level():
